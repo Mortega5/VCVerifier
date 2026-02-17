@@ -132,6 +132,8 @@ type CredentialVerifier struct {
 	clientIdentification configModel.ClientIdentification
 	// config of the verifier
 	verifierConfig configModel.Verifier
+	// JWT token expiration time in minutes
+	jwtExpiration time.Duration
 }
 
 // allow singleton access to the verifier
@@ -224,6 +226,8 @@ type loginSession struct {
 	requestObject string
 	// inidicates if the cross device session is v1 or v2
 	version int
+	// scope requested for the session
+	scope string
 }
 
 // struct to represent a token, accessible through the token endpoint
@@ -307,6 +311,15 @@ func InitVerifier(config *configModel.Configuration) (err error) {
 
 	key, err := initPrivateKey(verifierConfig.KeyAlgorithm, verifierConfig.GenerateKey, verifierConfig.KeyPath)
 
+	kid := verifierConfig.ClientIdentification.Id
+	if verifierConfig.ClientIdentification.Kid != "" {
+		kid = verifierConfig.ClientIdentification.Kid
+	}
+	if key != nil && !key.Has(jwk.KeyIDKey) {
+		logging.Log().Infof("Adding kid='%s' to keyset", kid)
+		key.Set(jwk.KeyIDKey, kid)
+	}
+
 	if err != nil {
 		logging.Log().Errorf("Was not able to initiate a signing key. Err: %v", err)
 		return err
@@ -342,6 +355,7 @@ func InitVerifier(config *configModel.Configuration) (err error) {
 		&didSigningKey,
 		verifierConfig.ClientIdentification,
 		*verifierConfig,
+		time.Duration(verifierConfig.JwtExpiration) * time.Minute,
 	}
 
 	logging.Log().Debug("Successfully initalized the verifier")
@@ -422,7 +436,7 @@ func (v *CredentialVerifier) StartSameDeviceFlow(host string, protocol string, s
 		nonce = v.nonceGenerator.GenerateNonce()
 	}
 
-	loginSession := loginSession{callback: fmt.Sprintf("%s://%s%s", protocol, host, redirectPath), sessionId: state, nonce: nonce, clientId: clientId, version: SAME_DEVICE}
+	loginSession := loginSession{callback: fmt.Sprintf("%s://%s%s", protocol, host, redirectPath), sessionId: state, nonce: nonce, clientId: clientId, version: SAME_DEVICE, scope: scope}
 	err = v.sessionCache.Add(state, loginSession, cache.DefaultExpiration)
 	if err != nil {
 		logging.Log().Warnf("Was not able to store the login session %s in cache. Err: %v", logging.PrettyPrintObject(loginSession), err)
@@ -776,7 +790,7 @@ func (v *CredentialVerifier) AuthenticationResponse(state string, verifiablePres
 
 	for _, credential := range verifiablePresentation.Credentials() {
 
-		verificationContext, err := v.getTrustRegistriesValidationContext(loginSession.clientId, credential.Contents().Types)
+		verificationContext, err := v.getTrustRegistriesValidationContext(loginSession.clientId, credential.Contents().Types, loginSession.scope)
 		if err != nil {
 			logging.Log().Warnf("Was not able to create a valid verification context. Credential will be rejected. Err: %v", err)
 			return sameDevice, ErrorVerficationContextSetup
@@ -816,7 +830,7 @@ func (v *CredentialVerifier) AuthenticationResponse(state string, verifiablePres
 		toBeIncluded = append(toBeIncluded, credential.ToRawJSON())
 	}
 
-	flatClaims, _ := v.credentialsConfig.GetFlatClaims(loginSession.clientId, configModel.SERVICE_DEFAULT_SCOPE)
+	flatClaims, _ := v.credentialsConfig.GetFlatClaims(loginSession.clientId, loginSession.scope)
 	token, err := v.generateJWT(toBeIncluded, verifiablePresentation.Holder, hostname, flatClaims)
 	if err != nil {
 		logging.Log().Warnf("Was not able to create a jwt for %s. Err: %v", state, err)
@@ -928,17 +942,18 @@ func (v *CredentialVerifier) getHolderValidationContext(clientId string, scope s
 	return validationContexts, err
 }
 
-func (v *CredentialVerifier) getTrustRegistriesValidationContext(clientId string, credentialTypes []string) (verificationContext TrustRegistriesValidationContext, err error) {
+func (v *CredentialVerifier) getTrustRegistriesValidationContext(clientId string, credentialTypes []string, scope string) (verificationContext TrustRegistriesValidationContext, err error) {
+	logging.Log().Debugf("Create trust registry validation context for client '%s', scope '%s' and credential types %s", clientId, scope, credentialTypes)
 	trustedIssuersLists := map[string][]string{}
 	trustedParticipantsRegistries := map[string][]configModel.TrustedParticipantsList{}
 
 	for _, credentialType := range credentialTypes {
-		issuersLists, err := v.credentialsConfig.GetTrustedIssuersLists(clientId, configModel.SERVICE_DEFAULT_SCOPE, credentialType)
+		issuersLists, err := v.credentialsConfig.GetTrustedIssuersLists(clientId, scope, credentialType)
 		if err != nil {
 			logging.Log().Warnf("Was not able to get valid trusted-issuers-lists for client %s and type %s. Err: %v", clientId, credentialType, err)
 			return verificationContext, err
 		}
-		participantsLists, err := v.credentialsConfig.GetTrustedParticipantLists(clientId, configModel.SERVICE_DEFAULT_SCOPE, credentialType)
+		participantsLists, err := v.credentialsConfig.GetTrustedParticipantLists(clientId, scope, credentialType)
 		if err != nil {
 			logging.Log().Warnf("Was not able to get valid trusted-pariticpants-registries for client %s and type %s. Err: %v", clientId, credentialType, err)
 			return verificationContext, err
@@ -1026,7 +1041,7 @@ func verifyChain(vcs []*verifiable.Credential) (bool, error) {
 // intialize the OID4VP cross device flow
 func (v *CredentialVerifier) initOid4VPCrossDevice(host string, protocol string, redirectUri string, state string, clientId string, scope string, nonce string, requestMode string) (authenticationRequest string, err error) {
 
-	loginSession := loginSession{redirectUri, state, nonce, clientId, "", CROSS_DEVICE_V2}
+	loginSession := loginSession{redirectUri, state, nonce, clientId, "", CROSS_DEVICE_V2, scope}
 	err = v.sessionCache.Add(state, loginSession, cache.DefaultExpiration)
 
 	if err != nil {
@@ -1045,7 +1060,7 @@ func (v *CredentialVerifier) initSiopFlow(host string, protocol string, callback
 		logging.Log().Debugf("No nonce provided, generate one.")
 		nonce = v.nonceGenerator.GenerateNonce()
 	}
-	loginSession := loginSession{callback, state, nonce, clientId, "", CROSS_DEVICE_V1}
+	loginSession := loginSession{callback, state, nonce, clientId, "", CROSS_DEVICE_V1, ""}
 	err = v.sessionCache.Add(state, loginSession, cache.DefaultExpiration)
 
 	if err != nil {
@@ -1092,7 +1107,7 @@ func (v *CredentialVerifier) generateAuthenticationRequest(base string, clientId
 // generate a jwt, containing the credential and mandatory information as defined by the dsba-convergence
 func (v *CredentialVerifier) generateJWT(credentials []map[string]interface{}, holder string, audience string, flatValues bool) (generatedJwt jwt.Token, err error) {
 
-	jwtBuilder := jwt.NewBuilder().Issuer(v.GetHost()).Audience([]string{audience}).Expiration(v.clock.Now().Add(time.Minute * 30))
+	jwtBuilder := jwt.NewBuilder().Issuer(v.GetHost()).Audience([]string{audience}).Expiration(v.clock.Now().Add(v.jwtExpiration))
 
 	if holder != "" {
 		jwtBuilder.Subject(holder)

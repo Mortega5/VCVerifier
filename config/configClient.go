@@ -12,8 +12,6 @@ import (
 
 const SERVICES_PATH = "service"
 
-const SERVICE_DEFAULT_SCOPE = ""
-
 var ErrorCcsNoResponse = errors.New("no_response_from_ccs")
 var ErrorCcsErrorResponse = errors.New("error_response_from_ccs")
 var ErrorCcsEmptyResponse = errors.New("empty_response_from_ccs")
@@ -227,9 +225,7 @@ func (cs ConfiguredService) GetRequiredCredentialTypes(scope string) (types []st
 }
 
 func (cs ConfiguredService) GetScope(scope string) (scopeEntry ScopeEntry, err error) {
-	if scope != SERVICE_DEFAULT_SCOPE {
-		scope = cs.DefaultOidcScope
-	}
+
 	scopeEntry, exists := cs.ServiceScopes[scope]
 	if !exists {
 		return scopeEntry, ErrorNoSuchScope
@@ -238,6 +234,7 @@ func (cs ConfiguredService) GetScope(scope string) (scopeEntry ScopeEntry, err e
 }
 
 func (cs ConfiguredService) GetCredentials(scope string) (credentials []Credential, err error) {
+
 	scopeEntry, err := cs.GetScope(scope)
 	if err != nil {
 		return credentials, err
@@ -262,6 +259,7 @@ func (cs ConfiguredService) GetDcqlQuery(scope string) (dcql *DCQL, err error) {
 }
 
 func (cs ConfiguredService) GetCredential(scope, credentialType string) (Credential, bool) {
+
 	credentials, err := cs.GetCredentials(scope)
 	if err == nil {
 		for _, credential := range credentials {

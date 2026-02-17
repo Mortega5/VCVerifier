@@ -88,6 +88,8 @@ type Verifier struct {
 	GenerateKey bool `mapstructure:"generateKey" default:"true"`
 	// path to the private key for jwt signatures
 	KeyPath string `mapstructure:"keyPath"`
+	// expiration time in minutes for JWT tokens
+	JwtExpiration int `mapstructure:"jwtExpiration" default:"30"`
 }
 
 type ClientIdentification struct {
@@ -99,6 +101,8 @@ type ClientIdentification struct {
 	Id string `mapstructure:"id"`
 	// optional path to the certifcate to embed in the jwt header
 	CertificatePath string `mapstructure:"certificatePath"`
+	// Kid used when key certificate does not include it. If both are missing, id is used
+	Kid string `mapstructure:"kid"`
 }
 
 type Elsi struct {
